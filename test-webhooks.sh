@@ -76,12 +76,20 @@ cleanup_mock() {
     MOCK_DIR=""
 }
 
-# Run the script: mock PATH (no fzf), piped stdin
+# Run the script with mocked az (no fzf in PATH → numbered list fallback).
+# jq lives at /usr/bin so it's found without any changes.
+# Stdin must include "n" as the FIRST line to answer the fzf install prompt.
 run_script() {
     local mock_dir="$1"
     local stdin_input="$2"
+    # mock_dir first so mock az takes priority; no fzf → triggers install prompt
     local safe_path="$mock_dir:/usr/bin:/bin:/usr/sbin:/sbin"
     echo "$stdin_input" | PATH="$safe_path" bash "$SCRIPT" 2>&1 || true
+}
+
+# Prepend "n" (decline fzf install) to a stdin block
+with_no_fzf() {
+    printf 'n\n%s' "$1"
 }
 
 count_successes() {
@@ -99,7 +107,183 @@ else
     bash -n "$SCRIPT"
 fi
 
-# ── 2. Webhook header construction ───────────────────────────────────────────
+# ── 2. Dependency check ──────────────────────────────────────────────────────
+
+# Helper: build a dep-test script by extracting functions from the main script
+# and prepending print helpers + a given preamble, appending check_dependencies call.
+# Usage: make_dep_script <output_file> <preamble>
+make_dep_script() {
+    local out="$1" preamble="$2"
+    cat > "$out" << 'HELPERS'
+#!/bin/bash
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+print_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+HELPERS
+    [ -n "$preamble" ] && echo "$preamble" >> "$out"
+    # Extract function definitions: from dep management comment up to (not incl.) standalone call
+    awk '/^# ── Dependency management/{f=1} f && /^check_dependencies$/{exit} f{print}' \
+        "$SCRIPT_DIR/$(basename "$SCRIPT")" >> "$out"
+    echo "check_dependencies" >> "$out"
+    chmod +x "$out"
+}
+
+section "Dependency check — all present"
+
+DEP_MOCK=$(mktemp -d)
+cat > "$DEP_MOCK/az"  << 'EOF'
+#!/bin/bash
+EOF
+cat > "$DEP_MOCK/fzf" << 'EOF'
+#!/bin/bash
+echo "0.44.0"
+EOF
+chmod +x "$DEP_MOCK/az" "$DEP_MOCK/fzf"
+
+DEP_SCRIPT=$(mktemp)
+make_dep_script "$DEP_SCRIPT" ""
+DEP_OUT=$(PATH="$DEP_MOCK:/usr/bin:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT" 2>&1) || true
+rm -rf "$DEP_MOCK" "$DEP_SCRIPT"
+
+echo "$DEP_OUT" | grep -q "✓ jq"        && pass "Dep check: jq found and reported"        || fail "Dep check: jq not detected"
+echo "$DEP_OUT" | grep -q "✓ Azure CLI" && pass "Dep check: Azure CLI found and reported" || fail "Dep check: Azure CLI not detected"
+echo "$DEP_OUT" | grep -q "✓ fzf"       && pass "Dep check: fzf found and reported"       || fail "Dep check: fzf not detected"
+
+section "Dependency check — fzf missing, user declines install"
+
+DEP_MOCK2=$(mktemp -d)
+cat > "$DEP_MOCK2/az" << 'EOF'
+#!/bin/bash
+EOF
+chmod +x "$DEP_MOCK2/az"
+
+DEP_SCRIPT2=$(mktemp)
+make_dep_script "$DEP_SCRIPT2" ""
+DEP_OUT2=$(echo "n" | PATH="$DEP_MOCK2:/usr/bin:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT2" 2>&1) || true
+rm -rf "$DEP_MOCK2" "$DEP_SCRIPT2"
+
+echo "$DEP_OUT2" | grep -q "fzf not found" && pass "Dep check: fzf-missing warning shown"       || fail "Dep check: fzf-missing warning not shown"
+echo "$DEP_OUT2" | grep -q "Skipping fzf"  && pass "Dep check: skipping fzf after 'n' response" || fail "Dep check: did not skip fzf after 'n'"
+
+section "Dependency check — fzf missing, user accepts install (brew present)"
+
+DEP_MOCK3=$(mktemp -d)
+cat > "$DEP_MOCK3/az" << 'EOF'
+#!/bin/bash
+EOF
+cat > "$DEP_MOCK3/brew" << 'EOF'
+#!/bin/bash
+echo "[mock] brew install $*"
+EOF
+chmod +x "$DEP_MOCK3/az" "$DEP_MOCK3/brew"
+
+DEP_SCRIPT3=$(mktemp)
+make_dep_script "$DEP_SCRIPT3" 'OSTYPE="darwin20"'
+DEP_OUT3=$(echo "y" | PATH="$DEP_MOCK3:/usr/bin:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT3" 2>&1) || true
+rm -rf "$DEP_MOCK3" "$DEP_SCRIPT3"
+
+if echo "$DEP_OUT3" | grep -q "Installing fzf via Homebrew\|brew install fzf\|mock.*brew"; then
+    pass "Dep check: brew install attempted after 'y' response"
+else
+    fail "Dep check: brew install not attempted after 'y'"
+    echo "  Output: $DEP_OUT3"
+fi
+
+section "Dependency check — jq missing, user declines install"
+
+# Exclude /usr/bin from PATH so the real jq is hidden; az and fzf are in mock
+DEP_MOCK_NJQ=$(mktemp -d)
+cat > "$DEP_MOCK_NJQ/az"  << 'EOF'
+#!/bin/bash
+EOF
+cat > "$DEP_MOCK_NJQ/fzf" << 'EOF'
+#!/bin/bash
+echo "0.44.0"
+EOF
+chmod +x "$DEP_MOCK_NJQ/az" "$DEP_MOCK_NJQ/fzf"
+
+DEP_SCRIPT_NJQ=$(mktemp)
+make_dep_script "$DEP_SCRIPT_NJQ" ""
+DEP_OUT_NJQ=$(echo "n" | PATH="$DEP_MOCK_NJQ:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT_NJQ" 2>&1) || true
+rm -rf "$DEP_MOCK_NJQ" "$DEP_SCRIPT_NJQ"
+
+echo "$DEP_OUT_NJQ" | grep -q "jq not found"                                              && pass "Dep check: jq-missing warning shown"           || fail "Dep check: jq-missing warning not shown"
+echo "$DEP_OUT_NJQ" | grep -q "jq is required to run this script\|jq is required"        && pass "Dep check: jq required error shown after 'n'"   || fail "Dep check: jq required error not shown"
+
+section "Dependency check — jq missing, user accepts install (brew present)"
+
+DEP_MOCK_NJQ2=$(mktemp -d)
+cat > "$DEP_MOCK_NJQ2/az"   << 'EOF'
+#!/bin/bash
+EOF
+cat > "$DEP_MOCK_NJQ2/fzf"  << 'EOF'
+#!/bin/bash
+echo "0.44.0"
+EOF
+cat > "$DEP_MOCK_NJQ2/brew" << 'EOF'
+#!/bin/bash
+echo "[mock] brew install $*"
+EOF
+chmod +x "$DEP_MOCK_NJQ2/az" "$DEP_MOCK_NJQ2/fzf" "$DEP_MOCK_NJQ2/brew"
+
+DEP_SCRIPT_NJQ2=$(mktemp)
+make_dep_script "$DEP_SCRIPT_NJQ2" 'OSTYPE="darwin20"'
+DEP_OUT_NJQ2=$(echo "y" | PATH="$DEP_MOCK_NJQ2:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT_NJQ2" 2>&1) || true
+rm -rf "$DEP_MOCK_NJQ2" "$DEP_SCRIPT_NJQ2"
+
+if echo "$DEP_OUT_NJQ2" | grep -q "Installing jq via Homebrew\|brew install jq\|mock.*brew"; then
+    pass "Dep check: brew install jq attempted after 'y' response"
+else
+    fail "Dep check: brew install jq not attempted after 'y'"
+    echo "  Output: $DEP_OUT_NJQ2"
+fi
+
+section "Dependency check — az missing, user declines install"
+
+# az is absent from mock; jq found at /usr/bin/jq; fzf in mock
+DEP_MOCK_NAZ=$(mktemp -d)
+cat > "$DEP_MOCK_NAZ/fzf" << 'EOF'
+#!/bin/bash
+echo "0.44.0"
+EOF
+chmod +x "$DEP_MOCK_NAZ/fzf"
+
+DEP_SCRIPT_NAZ=$(mktemp)
+make_dep_script "$DEP_SCRIPT_NAZ" ""
+DEP_OUT_NAZ=$(echo "n" | PATH="$DEP_MOCK_NAZ:/usr/bin:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT_NAZ" 2>&1) || true
+rm -rf "$DEP_MOCK_NAZ" "$DEP_SCRIPT_NAZ"
+
+echo "$DEP_OUT_NAZ" | grep -q "Azure CLI not found"                                                    && pass "Dep check: az-missing warning shown"           || fail "Dep check: az-missing warning not shown"
+echo "$DEP_OUT_NAZ" | grep -q "Azure CLI is required to run this script\|Azure CLI is required"       && pass "Dep check: az required error shown after 'n'"   || fail "Dep check: az required error not shown"
+
+section "Dependency check — az missing, user accepts install (brew present)"
+
+DEP_MOCK_NAZ2=$(mktemp -d)
+cat > "$DEP_MOCK_NAZ2/fzf"  << 'EOF'
+#!/bin/bash
+echo "0.44.0"
+EOF
+cat > "$DEP_MOCK_NAZ2/brew" << 'EOF'
+#!/bin/bash
+echo "[mock] brew install $*"
+EOF
+chmod +x "$DEP_MOCK_NAZ2/fzf" "$DEP_MOCK_NAZ2/brew"
+
+DEP_SCRIPT_NAZ2=$(mktemp)
+make_dep_script "$DEP_SCRIPT_NAZ2" 'OSTYPE="darwin20"'
+# 'y' accepts az install; after install az still absent, but mock brew exits 0
+DEP_OUT_NAZ2=$(printf "y\nn" | PATH="$DEP_MOCK_NAZ2:/usr/bin:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT_NAZ2" 2>&1) || true
+rm -rf "$DEP_MOCK_NAZ2" "$DEP_SCRIPT_NAZ2"
+
+if echo "$DEP_OUT_NAZ2" | grep -q "Installing Azure CLI via Homebrew\|brew install azure-cli\|mock.*brew"; then
+    pass "Dep check: brew install azure-cli attempted after 'y' response"
+else
+    fail "Dep check: brew install azure-cli not attempted after 'y'"
+    echo "  Output: $DEP_OUT_NAZ2"
+fi
+
+# ── 3. Webhook header construction ───────────────────────────────────────────
 
 section "Webhook header construction"
 
@@ -441,11 +625,11 @@ rm -f "$SELECT_TEST"
 section "E2E — project-wide scope (select 0)"
 
 make_mock_az "$REPOS_JSON"
-STDIN="myorg
+STDIN=$(with_no_fzf "myorg
 my-project
 https://example.com/webhook
 secret123
-0"
+0")
 OUTPUT=$(run_script "$MOCK_DIR" "$STDIN")
 cleanup_mock
 
@@ -477,11 +661,11 @@ fi
 section "E2E — single repo (select 1)"
 
 make_mock_az "$REPOS_JSON"
-STDIN="myorg
+STDIN=$(with_no_fzf "myorg
 my-project
 https://example.com/webhook
 secret123
-1"
+1")
 OUTPUT=$(run_script "$MOCK_DIR" "$STDIN")
 cleanup_mock
 
@@ -508,11 +692,11 @@ fi
 section "E2E — multi-repo (select 1,3)"
 
 make_mock_az "$REPOS_JSON"
-STDIN="myorg
+STDIN=$(with_no_fzf "myorg
 my-project
 https://example.com/webhook
 secret123
-1,3"
+1,3")
 OUTPUT=$(run_script "$MOCK_DIR" "$STDIN")
 cleanup_mock
 
@@ -544,10 +728,10 @@ fi
 section "E2E — zero repos (fallback to project-wide)"
 
 make_mock_az "$REPOS_EMPTY_JSON"
-STDIN="myorg
+STDIN=$(with_no_fzf "myorg
 my-project
 https://example.com/webhook
-secret123"
+secret123")
 OUTPUT=$(run_script "$MOCK_DIR" "$STDIN")
 cleanup_mock
 
@@ -569,11 +753,11 @@ fi
 section "E2E — all 4 PR event types covered"
 
 make_mock_az "$REPOS_JSON"
-STDIN="myorg
+STDIN=$(with_no_fzf "myorg
 my-project
 https://example.com/webhook
 secret123
-0"
+0")
 OUTPUT=$(run_script "$MOCK_DIR" "$STDIN")
 cleanup_mock
 

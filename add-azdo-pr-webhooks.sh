@@ -40,6 +40,115 @@ print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 print_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# ── Dependency management ────────────────────────────────────────────────────
+
+# Install a package using the OS package manager
+# Usage: install_package <display-name> <brew-pkg> <apt/yum-pkg>
+install_package() {
+    local name="$1" brew_pkg="$2" linux_pkg="$3"
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        if ! command -v brew &>/dev/null; then
+            print_error "Homebrew not found. Install it from https://brew.sh then re-run."
+            return 1
+        fi
+        print_info "Installing $name via Homebrew..."
+        brew install "$brew_pkg"
+    elif command -v apt-get &>/dev/null; then
+        print_info "Installing $name via apt-get..."
+        sudo apt-get install -y "$linux_pkg"
+    elif command -v yum &>/dev/null; then
+        print_info "Installing $name via yum..."
+        sudo yum install -y "$linux_pkg"
+    else
+        print_error "No supported package manager found (brew/apt-get/yum)."
+        print_error "Please install $name manually and re-run."
+        return 1
+    fi
+}
+
+# Install Azure CLI using the official Microsoft script (Linux fallback)
+install_azure_cli() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        install_package "Azure CLI" "azure-cli" "azure-cli" || return 1
+    elif command -v curl &>/dev/null; then
+        print_info "Installing Azure CLI via Microsoft install script..."
+        curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash || {
+            print_error "Auto-install failed."
+            print_error "Install manually: https://learn.microsoft.com/cli/azure/install-azure-cli"
+            return 1
+        }
+    else
+        print_error "curl not found. Install Azure CLI manually:"
+        print_error "  https://learn.microsoft.com/cli/azure/install-azure-cli"
+        return 1
+    fi
+}
+
+check_dependencies() {
+    echo ""
+    print_info "Checking dependencies..."
+
+    # ── jq (required) ────────────────────────────────────────────────────────
+    if ! command -v jq &>/dev/null; then
+        print_warn "jq not found (required for JSON parsing)."
+        read -p "Install jq now? [y/N]: " yn
+        if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
+            if ! install_package "jq" "jq" "jq"; then
+                print_error "jq is required. Exiting."
+                exit 1
+            fi
+            print_info "✓ jq installed"
+        else
+            print_error "jq is required to run this script. Exiting."
+            exit 1
+        fi
+    else
+        print_info "✓ jq $(jq --version)"
+    fi
+
+    # ── Azure CLI (required) ──────────────────────────────────────────────────
+    if ! command -v az &>/dev/null; then
+        print_warn "Azure CLI not found (required for Azure DevOps authentication)."
+        read -p "Install Azure CLI now? [y/N]: " yn
+        if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
+            if ! install_azure_cli; then
+                exit 1
+            fi
+            print_info "✓ Azure CLI installed"
+            print_warn "You need to log in before continuing."
+            az login || { print_error "Login failed. Re-run the script after running 'az login'."; exit 1; }
+        else
+            print_error "Azure CLI is required to run this script. Exiting."
+            exit 1
+        fi
+    else
+        print_info "✓ Azure CLI $(az version --query '"azure-cli"' -o tsv 2>/dev/null || echo 'installed')"
+    fi
+
+    # ── fzf (optional) ────────────────────────────────────────────────────────
+    if ! command -v fzf &>/dev/null; then
+        print_warn "fzf not found (optional — enables interactive repo selection)."
+        read -p "Install fzf now? [y/N]: " yn
+        if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
+            if install_package "fzf" "fzf" "fzf"; then
+                print_info "✓ fzf installed"
+            else
+                print_warn "fzf install failed. Will use numbered list for repo selection."
+            fi
+        else
+            print_info "Skipping fzf. Will use numbered list for repo selection."
+        fi
+    else
+        print_info "✓ fzf $(fzf --version 2>/dev/null || echo 'installed')"
+    fi
+
+    print_info "Dependency check complete."
+    echo ""
+}
+
+check_dependencies
+
 # Prompt for all required values
 echo ""
 read -p "Enter Azure DevOps Organization (e.g., myorg OR https://dev.azure.com/myorg): " AZDO_ORG
