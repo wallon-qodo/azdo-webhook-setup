@@ -128,17 +128,7 @@ check_dependencies() {
 
     # ── fzf (optional) ────────────────────────────────────────────────────────
     if ! command -v fzf &>/dev/null; then
-        print_warn "fzf not found (optional — enables interactive repo selection)."
-        read -p "Install fzf now? [y/N]: " yn
-        if [[ "$yn" == "y" || "$yn" == "Y" ]]; then
-            if install_package "fzf" "fzf" "fzf"; then
-                print_info "✓ fzf installed"
-            else
-                print_warn "fzf install failed. Will use numbered list for repo selection."
-            fi
-        else
-            print_info "Skipping fzf. Will use numbered list for repo selection."
-        fi
+        print_warn "fzf not found — will use numbered list for repo selection."
     else
         print_info "✓ fzf $(fzf --version 2>/dev/null || echo 'installed')"
     fi

@@ -78,18 +78,16 @@ cleanup_mock() {
 
 # Run the script with mocked az (no fzf in PATH → numbered list fallback).
 # jq lives at /usr/bin so it's found without any changes.
-# Stdin must include "n" as the FIRST line to answer the fzf install prompt.
 run_script() {
     local mock_dir="$1"
     local stdin_input="$2"
-    # mock_dir first so mock az takes priority; no fzf → triggers install prompt
     local safe_path="$mock_dir:/usr/bin:/bin:/usr/sbin:/sbin"
     echo "$stdin_input" | PATH="$safe_path" bash "$SCRIPT" 2>&1 || true
 }
 
-# Prepend "n" (decline fzf install) to a stdin block
+# Pass stdin through unchanged (kept for readability at call sites)
 with_no_fzf() {
-    printf 'n\n%s' "$1"
+    printf '%s' "$1"
 }
 
 count_successes() {
@@ -150,7 +148,7 @@ echo "$DEP_OUT" | grep -q "✓ jq"        && pass "Dep check: jq found and repor
 echo "$DEP_OUT" | grep -q "✓ Azure CLI" && pass "Dep check: Azure CLI found and reported" || fail "Dep check: Azure CLI not detected"
 echo "$DEP_OUT" | grep -q "✓ fzf"       && pass "Dep check: fzf found and reported"       || fail "Dep check: fzf not detected"
 
-section "Dependency check — fzf missing, user declines install"
+section "Dependency check — fzf missing (warn only, no prompt)"
 
 DEP_MOCK2=$(mktemp -d)
 cat > "$DEP_MOCK2/az" << 'EOF'
@@ -160,35 +158,11 @@ chmod +x "$DEP_MOCK2/az"
 
 DEP_SCRIPT2=$(mktemp)
 make_dep_script "$DEP_SCRIPT2" ""
-DEP_OUT2=$(echo "n" | PATH="$DEP_MOCK2:/usr/bin:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT2" 2>&1) || true
+DEP_OUT2=$(PATH="$DEP_MOCK2:/usr/bin:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT2" 2>&1) || true
 rm -rf "$DEP_MOCK2" "$DEP_SCRIPT2"
 
-echo "$DEP_OUT2" | grep -q "fzf not found" && pass "Dep check: fzf-missing warning shown"       || fail "Dep check: fzf-missing warning not shown"
-echo "$DEP_OUT2" | grep -q "Skipping fzf"  && pass "Dep check: skipping fzf after 'n' response" || fail "Dep check: did not skip fzf after 'n'"
-
-section "Dependency check — fzf missing, user accepts install (brew present)"
-
-DEP_MOCK3=$(mktemp -d)
-cat > "$DEP_MOCK3/az" << 'EOF'
-#!/bin/bash
-EOF
-cat > "$DEP_MOCK3/brew" << 'EOF'
-#!/bin/bash
-echo "[mock] brew install $*"
-EOF
-chmod +x "$DEP_MOCK3/az" "$DEP_MOCK3/brew"
-
-DEP_SCRIPT3=$(mktemp)
-make_dep_script "$DEP_SCRIPT3" 'OSTYPE="darwin20"'
-DEP_OUT3=$(echo "y" | PATH="$DEP_MOCK3:/usr/bin:/bin:/usr/sbin:/sbin" bash "$DEP_SCRIPT3" 2>&1) || true
-rm -rf "$DEP_MOCK3" "$DEP_SCRIPT3"
-
-if echo "$DEP_OUT3" | grep -q "Installing fzf via Homebrew\|brew install fzf\|mock.*brew"; then
-    pass "Dep check: brew install attempted after 'y' response"
-else
-    fail "Dep check: brew install not attempted after 'y'"
-    echo "  Output: $DEP_OUT3"
-fi
+echo "$DEP_OUT2" | grep -q "fzf not found"      && pass "Dep check: fzf-missing warning shown"              || fail "Dep check: fzf-missing warning not shown"
+echo "$DEP_OUT2" | grep -q "numbered list"       && pass "Dep check: numbered list fallback message shown"   || fail "Dep check: numbered list message not shown"
 
 section "Dependency check — jq missing, user declines install"
 
