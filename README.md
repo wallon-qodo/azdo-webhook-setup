@@ -4,6 +4,7 @@ Interactive script to create Azure DevOps service hook subscriptions for Pull Re
 
 ## Features
 
+- **Dependency auto-install**: prompts to install `jq` and Azure CLI if missing
 - Interactive prompts for all configuration values
 - Accepts either organization name or full URL
 - **Repo-specific scoping**: select one, multiple, or all repos in a project
@@ -18,10 +19,15 @@ Interactive script to create Azure DevOps service hook subscriptions for Pull Re
 
 ## Prerequisites
 
-- Azure CLI: `az login`
-- `jq` installed
-- `fzf` installed _(optional — falls back to numbered list)_
 - Access to the target Azure DevOps organization and project
+
+The script will automatically detect and offer to install any missing dependencies:
+
+| Dependency | Required | Auto-install |
+|---|---|---|
+| Azure CLI (`az`) | Yes | Yes — prompts to install |
+| `jq` | Yes | Yes — prompts to install |
+| `fzf` | No | No — falls back to numbered list |
 
 ## Installation
 
@@ -37,7 +43,19 @@ chmod +x add-azdo-pr-webhooks.sh
 ./add-azdo-pr-webhooks.sh
 ```
 
-You'll be prompted for:
+On first run, the script checks dependencies before prompting for configuration:
+
+```
+[INFO] Checking dependencies...
+[WARN] jq not found (required for JSON parsing).
+Install jq now? [y/N]: y
+[INFO] Installing jq via Homebrew...
+[INFO] ✓ jq installed
+[INFO] ✓ Azure CLI 2.x.x
+[WARN] fzf not found — will use numbered list for repo selection.
+```
+
+You'll then be prompted for:
 
 1. **Azure DevOps Organization** — `myorg` or `https://dev.azure.com/myorg`
 2. **Project Name** — exact name, case-sensitive
@@ -49,6 +67,11 @@ You'll be prompted for:
 
 ```
 $ ./add-azdo-pr-webhooks.sh
+
+[INFO] Checking dependencies...
+[INFO] ✓ jq jq-1.7
+[INFO] ✓ Azure CLI 2.67.0
+[INFO] ✓ fzf 0.57.0
 
 Enter Azure DevOps Organization (e.g., myorg OR https://dev.azure.com/myorg): myorg
 Enter Azure DevOps Project Name: my-project
@@ -89,7 +112,7 @@ Enter Webhook Secret Token: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ### No fzf installed (numbered list fallback)
 
 ```
-[WARN] fzf not found. Using numbered list selection.
+[WARN] fzf not found — will use numbered list for repo selection.
 
   0) ALL REPOS (project-wide)
   1) api-service
@@ -131,13 +154,11 @@ chmod +x add-azdo-pr-webhooks.sh
 
 ### fzf not found
 
-Install fzf for interactive repo selection:
+fzf is optional. If not installed, the script automatically falls back to a numbered list — no action needed. To get the interactive picker:
 ```bash
 brew install fzf        # macOS
 apt-get install fzf     # Ubuntu/Debian
 ```
-
-Or skip it — the script automatically falls back to a numbered list.
 
 ## Testing
 
@@ -145,7 +166,7 @@ Or skip it — the script automatically falls back to a numbered list.
 bash test-webhooks.sh
 ```
 
-Runs 44 tests covering payload validation, URL normalization, repo selection logic, and full E2E scenarios using a mocked `az` CLI.
+Runs 55 tests covering dependency detection, payload validation, URL normalization, repo selection logic, and full E2E scenarios using a mocked `az` CLI.
 
 ## License
 
